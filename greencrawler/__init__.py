@@ -252,12 +252,18 @@ class Crawler:
         """Start crawling here."""
         if token_id:
             with self.engine.connect() as connection:
+                connection.execute(update(url_table)
+                    .where(url_table.c.token_id == token_id)
+                    .where(url_table.c.processed.is_(False))
+                    .where(url_table.c.fetched.is_(True))
+                    .values(fetched=False))
+                connection.commit()
                 statement = (select(token_table)
-                        .join_from(token_table, url_table)
-                        .where(token_table.c.id == token_id)
-                        .where(url_table.c.processed.is_(False))
-                        .where(token_table.c.url == self.initial_url_data.full_url)
-                        .where(token_table.c.mode == self.crawling_mode))
+                    .join_from(token_table, url_table)
+                    .where(token_table.c.id == token_id)
+                    .where(url_table.c.processed.is_(False))
+                    .where(token_table.c.url == self.initial_url_data.full_url)
+                    .where(token_table.c.mode == self.crawling_mode))
                 token = connection.execute(statement).first()
             if not token:
                 raise CrawlerException("Requested token not found.")
