@@ -1,13 +1,12 @@
 """Implements Crawler class."""
 
 import re
-import sys
+from datetime import datetime
 from typing import Any, Optional, final
 
 import asyncio
 import aiohttp
 
-import sqlalchemy
 from sqlalchemy import create_engine, Engine, Row
 from sqlalchemy import select, insert, update
 from sqlalchemy import func
@@ -30,6 +29,7 @@ class Crawler:
     crawling_mode: CrawlingMode
     token_id: int = None
     engine: Engine = create_engine("sqlite:///db.sqlite3")
+    _busy: bool = False
 
     _forbidden_domains: list[str] = []
     _forbidden_keywords: list[str] = []
@@ -37,17 +37,9 @@ class Crawler:
         "jspx", "php", "php5", "php4", "txt", ""]
 
 
-    def __init__(self, *,
-                 initial_url: str,
-                 crawling_mode: CrawlingMode = CrawlingMode.DOMAIN_ONLY,
-                 number_of_tasks: int = 3) -> None:
-        self.initial_url_data = URLData(initial_url)
-        if not bool(self.initial_url_data):
-            raise CrawlerException("Valid initial URL required.")
-
+    def __init__(self, *, number_of_tasks: int = 3) -> None:
         self.number_of_tasks = number_of_tasks
         self.tasks_state = TasksState(number_of_tasks)
-        self.crawling_mode = crawling_mode
         metadata_obj.create_all(self.engine)
 
     def get_forbidden_domains(self) -> list[str]:
@@ -205,9 +197,7 @@ class Crawler:
                     .join(
                         total_urls_statement,
                         total_urls_statement.c.token_id == token_table.c.id,
-                        isouter=True)
-                    .where(token_table.c.url == self.initial_url_data.full_url)
-                    .where(token_table.c.mode == self.crawling_mode))
+                        isouter=True))
             rows = connection.execute(statement)
             tokens = [{
                 "id": r.id,
@@ -248,40 +238,68 @@ class Crawler:
             self._set_url_as_processed(url, status)
             print(f"{url.url} [status: {status}]")
 
-    async def start(self, token_id: Optional[int] = None) -> None:
-        """Start crawling here."""
-        if token_id:
-            with self.engine.connect() as connection:
-                connection.execute(update(url_table)
-                    .where(url_table.c.token_id == token_id)
-                    .where(url_table.c.processed.is_(False))
-                    .where(url_table.c.fetched.is_(True))
-                    .values(fetched=False))
-                connection.commit()
-                statement = (select(token_table)
-                    .join_from(token_table, url_table)
-                    .where(token_table.c.id == token_id)
-                    .where(url_table.c.processed.is_(False))
-                    .where(token_table.c.url == self.initial_url_data.full_url)
-                    .where(token_table.c.mode == self.crawling_mode))
-                token = connection.execute(statement).first()
+    async def start(self, *, initial_url: str,
+                    crawling_mode: CrawlingMode = CrawlingMode.DOMAIN_ONLY) -> None:
+        """Start crawling."""
+        if self._busy:
+            print("Crawling is in process.")
+            return
+
+        self.initial_url_data = URLData(initial_url)
+        if not bool(self.initial_url_data):
+            raise CrawlerException("Valid initial URL required.")
+        self.crawling_mode = crawling_mode
+
+        with self.engine.connect() as connection:
+            token_id = connection.execute(
+                insert(token_table).values(
+                    url=self.initial_url_data.full_url,
+                    mode=self.crawling_mode,
+                    created=datetime.utcnow()
+                )).inserted_primary_key.id
+            connection.execute(
+                insert(url_table).values(
+                    token_id=token_id,
+                    url=self.initial_url_data.full_url,
+                    hash_id=self.initial_url_data.hash
+                ))
+            connection.commit()
+
+        await self.resume(token_id=token_id)
+
+    async def resume(self, *, token_id: int) -> None:
+        """Resume crawling."""
+        if self._busy:
+            print("Crawling is in process.")
+            return
+        if not token_id:
+            raise CrawlerException("Requested token not found.")
+        
+        with self.engine.connect() as connection:
+            statement = select(token_table).where(token_table.c.id == token_id)
+            token = connection.execute(statement).first()
             if not token:
                 raise CrawlerException("Requested token not found.")
-        else:
-            with self.engine.connect() as connection:
-                token_id = connection.execute(
-                    insert(token_table).values(
-                        url=self.initial_url_data.full_url,
-                        mode=self.crawling_mode
-                    )).inserted_primary_key.id
-                connection.execute(
-                    insert(url_table).values(
-                        token_id=token_id,
-                        url=self.initial_url_data.full_url,
-                        hash_id=self.initial_url_data.hash
-                    ))
-                connection.commit()
+            connection.execute(update(url_table)
+                .where(url_table.c.token_id == token_id)
+                .where(url_table.c.processed.is_(False))
+                .where(url_table.c.fetched.is_(True))
+                .values(fetched=False))
+            connection.commit()
+            statement = (select(token_table)
+                .join_from(token_table, url_table)
+                .where(token_table.c.id == token_id)
+                .where(url_table.c.processed.is_(False)))
+            token = connection.execute(statement).first()
+        if not token:
+            print("Crawling finished!")
+            return
+
+        self.crawling_mode = token.mode
+        self.initial_url_data = URLData(token.url)
         self.token_id = token_id
+        self._busy = True
         tasks = [self.task(idx) for idx in range(self.tasks_state.size)]
         await asyncio.gather(*tasks)
+        self._busy = False
         print("Crawling finished!")

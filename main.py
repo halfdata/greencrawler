@@ -8,10 +8,9 @@ class MyCrawler(Crawler):
 
 
 if __name__ == '__main__':
-    cr = MyCrawler(
-        initial_url='https://halfdata.net/',
-        crawling_mode = CrawlingMode.DOMAIN_AND_SUBDOMAINS,
-        number_of_tasks=10)
+    crawler = MyCrawler(number_of_tasks=10)
 
-    cr.set_forbidden_keywords([r'wp-json', r'\/feed'])
-    asyncio.run(cr.start())
+    crawler.set_forbidden_keywords([r'wp-json', r'\/feed'])
+
+    asyncio.run(crawler.start(initial_url='https://geosocks.com/',
+                              crawling_mode = CrawlingMode.DOMAIN_AND_SUBDOMAINS))
