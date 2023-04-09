@@ -12,5 +12,5 @@ if __name__ == '__main__':
 
     crawler.set_forbidden_keywords([r'wp-json', r'\/feed'])
 
-    asyncio.run(crawler.start(initial_url='https://geosocks.com/',
+    asyncio.run(crawler.start(initial_url='https://halfdata.net/',
                               crawling_mode = CrawlingMode.DOMAIN_AND_SUBDOMAINS))
