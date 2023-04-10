@@ -30,7 +30,9 @@ class Crawler:
     number_of_tasks: int = 3
     crawling_mode: CrawlingMode
     token_id: int = None
-    metadata_obj = MetaData()
+    metadata_obj: MetaData = MetaData()
+    token_table: Table
+    url_table: Table
     engine: Engine = create_engine("sqlite:///db.sqlite3")
     _busy: bool = False
 
