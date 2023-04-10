@@ -8,11 +8,13 @@ import asyncio
 import aiohttp
 
 from sqlalchemy import create_engine, Engine, Row
+from sqlalchemy import MetaData
+from sqlalchemy import Table, Index, UniqueConstraint, Column, ForeignKey
+from sqlalchemy import Integer, String, Enum, Boolean, DateTime
 from sqlalchemy import select, insert, update
 from sqlalchemy import func
 
 from .classes import CrawlingMode, TasksState, URLData
-from .data import metadata_obj, url_table, token_table
 
 HTTP_VSTATUS_NO_RESPONSE = 0
 HTTP_VSTATUS_NOT_HTML = 13
@@ -28,6 +30,7 @@ class Crawler:
     number_of_tasks: int = 3
     crawling_mode: CrawlingMode
     token_id: int = None
+    metadata_obj = MetaData()
     engine: Engine = create_engine("sqlite:///db.sqlite3")
     _busy: bool = False
 
@@ -40,7 +43,32 @@ class Crawler:
     def __init__(self, *, number_of_tasks: int = 3) -> None:
         self.number_of_tasks = number_of_tasks
         self.tasks_state = TasksState(number_of_tasks)
-        metadata_obj.create_all(self.engine)
+        self._define_db_tables()
+        self.metadata_obj.create_all(self.engine)
+
+    def _define_db_tables(self):
+        """Define required database tables."""
+        self.token_table = Table(
+            "tokens",
+            self.metadata_obj,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("url", String(1023)),
+            Column("mode", Enum(CrawlingMode), default=CrawlingMode.ALL),
+            Column("created", DateTime)
+        )
+        self.url_table = Table(
+            "urls",
+            self.metadata_obj,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("hash_id", String(63)),
+            Column("token_id", ForeignKey("tokens.id")),
+            Column("url", String(1023)),
+            Column("status", Integer, nullable=True),
+            Column("fetched", Boolean, default=False),
+            Column("processed", Boolean, default=False),
+            UniqueConstraint("token_id", "hash_id"),
+            Index("idx_token_hash", "token_id", "hash_id")
+        )
 
     def get_forbidden_domains(self) -> list[str]:
         """Retruns list of forbidden domains."""
@@ -74,11 +102,11 @@ class Crawler:
     def _get_next_url(self) -> Optional[Row[tuple]]:
         """Returns next URL from url_table for given token."""
         with self.engine.connect() as connection:
-            statement = (select(url_table)
-                    .where(url_table.c.token_id == self.token_id)
-                    .where(url_table.c.processed.is_(False))
-                    .where(url_table.c.fetched.is_(False))
-                    .order_by(url_table.c.id)
+            statement = (select(self.url_table)
+                    .where(self.url_table.c.token_id == self.token_id)
+                    .where(self.url_table.c.processed.is_(False))
+                    .where(self.url_table.c.fetched.is_(False))
+                    .order_by(self.url_table.c.id)
                     .limit(1))
             url = connection.execute(statement).first()
         return url
@@ -87,9 +115,9 @@ class Crawler:
     def _check_hash_exists(self, hash_id: str) -> bool:
         """Checks if hash_id already exists."""
         with self.engine.connect() as connection:
-            statement = (select(url_table)
-                    .where(url_table.c.token_id == self.token_id)
-                    .where(url_table.c.hash_id == hash_id)
+            statement = (select(self.url_table)
+                    .where(self.url_table.c.token_id == self.token_id)
+                    .where(self.url_table.c.hash_id == hash_id)
                     .limit(1))
             url = connection.execute(statement).first()
         return bool(url)
@@ -99,7 +127,7 @@ class Crawler:
         """Insert new URL record into url_table."""
         with self.engine.connect() as connection:
             connection.execute(
-                insert(url_table).values(
+                insert(self.url_table).values(
                     token_id=self.token_id,
                     url=url_data.full_url,
                     hash_id=url_data.hash
@@ -111,8 +139,8 @@ class Crawler:
         """Mark URL as fetched in database."""
         with self.engine.connect() as connection:
             connection.execute(
-                update(url_table)
-                .where(url_table.c.id == url.id)
+                update(self.url_table)
+                .where(self.url_table.c.id == url.id)
                 .values(fetched=True))
             connection.commit()
 
@@ -121,8 +149,8 @@ class Crawler:
         """Mark URL as processed in database."""
         with self.engine.connect() as connection:
             connection.execute(
-                update(url_table)
-                .where(url_table.c.id == url.id)
+                update(self.url_table)
+                .where(self.url_table.c.id == url.id)
                 .values(processed=True, status=status))
             connection.commit()
 
@@ -179,24 +207,26 @@ class Crawler:
         """Returns list of open tokens."""
         tokens = []
         with self.engine.connect() as connection:
-            total_urls_statement = (select(func.count().label("total_urls"), url_table.c.token_id)
-                .select_from(url_table)
-                 .group_by(url_table.c.token_id).subquery())
+            total_urls_statement = (select(func.count().label("total_urls"),
+                                           self.url_table.c.token_id)
+                .select_from(self.url_table)
+                 .group_by(self.url_table.c.token_id).subquery())
             not_processed_statement = (
-                select(func.count().label("not_processed_urls"), url_table.c.token_id)
-                .select_from(url_table)
-                .where(url_table.c.processed.is_(False))
-                .group_by(url_table.c.token_id).subquery())
+                select(func.count().label("not_processed_urls"),
+                       self.url_table.c.token_id)
+                .select_from(self.url_table)
+                .where(self.url_table.c.processed.is_(False))
+                .group_by(self.url_table.c.token_id).subquery())
             statement = (select(
-                        token_table,
+                        self.token_table,
                         total_urls_statement.c.total_urls,
                         not_processed_statement.c.not_processed_urls)
                     .join(
                         not_processed_statement,
-                        not_processed_statement.c.token_id == token_table.c.id)
+                        not_processed_statement.c.token_id == self.token_table.c.id)
                     .join(
                         total_urls_statement,
-                        total_urls_statement.c.token_id == token_table.c.id,
+                        total_urls_statement.c.token_id == self.token_table.c.id,
                         isouter=True))
             rows = connection.execute(statement)
             tokens = [{
@@ -252,13 +282,13 @@ class Crawler:
 
         with self.engine.connect() as connection:
             token_id = connection.execute(
-                insert(token_table).values(
+                insert(self.token_table).values(
                     url=self.initial_url_data.full_url,
                     mode=self.crawling_mode,
                     created=datetime.utcnow()
                 )).inserted_primary_key.id
             connection.execute(
-                insert(url_table).values(
+                insert(self.url_table).values(
                     token_id=token_id,
                     url=self.initial_url_data.full_url,
                     hash_id=self.initial_url_data.hash
@@ -276,20 +306,21 @@ class Crawler:
             raise CrawlerException("Requested token not found.")
         
         with self.engine.connect() as connection:
-            statement = select(token_table).where(token_table.c.id == token_id)
+            statement = (select(self.token_table)
+                         .where(self.token_table.c.id == token_id))
             token = connection.execute(statement).first()
             if not token:
                 raise CrawlerException("Requested token not found.")
-            connection.execute(update(url_table)
-                .where(url_table.c.token_id == token_id)
-                .where(url_table.c.processed.is_(False))
-                .where(url_table.c.fetched.is_(True))
+            connection.execute(update(self.url_table)
+                .where(self.url_table.c.token_id == token_id)
+                .where(self.url_table.c.processed.is_(False))
+                .where(self.url_table.c.fetched.is_(True))
                 .values(fetched=False))
             connection.commit()
-            statement = (select(token_table)
-                .join_from(token_table, url_table)
-                .where(token_table.c.id == token_id)
-                .where(url_table.c.processed.is_(False)))
+            statement = (select(self.token_table)
+                .join_from(self.token_table, self.url_table)
+                .where(self.token_table.c.id == token_id)
+                .where(self.url_table.c.processed.is_(False)))
             token = connection.execute(statement).first()
         if not token:
             print("Crawling finished!")
