@@ -1,6 +1,7 @@
 """Implements Crawler class."""
 
 import re
+from typing import Optional
 from datetime import datetime
 from typing import Any, Optional, final
 
@@ -26,8 +27,10 @@ class CrawlerException(Exception):
 
 class Crawler:
     """Base class for web crawler."""
-    initial_url_data: URLData
     number_of_tasks: int = 3
+    tasks_state: TasksState
+    urls_limit: Optional[int] = None
+    initial_url_data: URLData
     crawling_mode: CrawlingMode
     token_id: int = None
     metadata_obj: MetaData = MetaData()
@@ -42,13 +45,16 @@ class Crawler:
         "jspx", "php", "php5", "php4", "txt", ""]
 
 
-    def __init__(self, *, number_of_tasks: int = 3) -> None:
+    def __init__(self, *,
+                 number_of_tasks: int = 3,
+                 urls_limit: Optional[int] = None) -> None:
         self.number_of_tasks = number_of_tasks
         self.tasks_state = TasksState(number_of_tasks)
+        self.urls_limit = urls_limit
         self._define_db_tables()
         self.metadata_obj.create_all(self.engine)
 
-    def _define_db_tables(self):
+    def _define_db_tables(self) -> None:
         """Define required database tables."""
         self.token_table = Table(
             "tokens",
@@ -161,7 +167,16 @@ class Crawler:
         """Extract URLs from web page and put them into queue."""
         regex = re.compile(r'href=[\"\\\']+([^\"\\\']+)', re.IGNORECASE)
         urls = re.findall(regex, html)
+        with self.engine.connect() as connection:
+            statement = (select(func.count())
+                .select_from(self.url_table)
+                .where(self.url_table.c.token_id == self.token_id))
+            total_urls = connection.execute(statement).scalar()
+
         for candidate_url in urls:
+            if self.urls_limit:
+                if total_urls >= self.urls_limit:
+                    break
             if candidate_url.startswith("#"):
                 continue
             candidate_data = URLData(candidate_url, parent_url)
@@ -199,6 +214,7 @@ class Crawler:
             if extension not in self._allowed_extensions:
                 continue
 
+            total_urls += 1
             self._add_url(candidate_data)
         self.custom_process_url(parent_url, html)
 
@@ -212,7 +228,7 @@ class Crawler:
             total_urls_statement = (select(func.count().label("total_urls"),
                                            self.url_table.c.token_id)
                 .select_from(self.url_table)
-                 .group_by(self.url_table.c.token_id).subquery())
+                .group_by(self.url_table.c.token_id).subquery())
             not_processed_statement = (
                 select(func.count().label("not_processed_urls"),
                        self.url_table.c.token_id)
