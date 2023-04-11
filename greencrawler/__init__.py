@@ -1,7 +1,6 @@
 """Implements Crawler class."""
 
 import re
-from typing import Optional
 from datetime import datetime
 from typing import Any, Optional, final
 
