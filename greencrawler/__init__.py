@@ -137,8 +137,7 @@ class Crawler:
                 insert(self.url_table).values(
                     token_id=self.token_id,
                     url=url_data.full_url,
-                    hash_id=url_data.hash
-                ))
+                    hash_id=url_data.hash))
             connection.commit()
 
     @final

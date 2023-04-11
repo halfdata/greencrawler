@@ -7,6 +7,6 @@ As a developer you can extend its functionality. Several ideas:
 - Count specific keywords.
 - etc.
 
-`main.py` contains the code which demonstrates how to use Green Crawler.
+Folder `examples/` contains some code which demonstrates how to use Green Crawler.
 
 More detailed documentation is coming soon...
